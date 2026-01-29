@@ -2,8 +2,11 @@
 // This worker runs FFmpeg operations in a separate thread to keep UI responsive
 
 import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile } from '@ffmpeg/util';
-import type { WorkerMessage, WorkerResponse, TrimSettings, FrameSettings, ConvertSettings, MergeSettings } from '../types';
+import { toBlobURL } from '@ffmpeg/util';
+import type { WorkerMessage, WorkerResponse, FFmpegCommand, TrimSettings, FrameSettings, ConvertSettings, MergeSettings } from '../types';
+
+// Self-hosted core (public/ffmpeg/) – same-origin, avoids CORS/import failures in worker
+const CORE_BASE = '/ffmpeg';
 
 let ffmpeg: FFmpeg | null = null;
 let isLoaded = false;
@@ -49,7 +52,7 @@ const checkSharedArrayBuffer = () => {
   }
 };
 
-// Load FFmpeg
+// Load FFmpeg – self-hosted core from public/ffmpeg/, toBlobURL avoids CORS/CORP in worker
 const loadFFmpeg = async () => {
   if (isLoaded && ffmpeg) return;
   
@@ -66,11 +69,11 @@ const loadFFmpeg = async () => {
       payload: { message: 'Loading FFmpeg core...' } 
     });
     
-    // Load FFmpeg with default URLs (uses CDN)
-    await ffmpeg.load({
-      coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
-      wasmURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
-    });
+    // Same-origin assets (public/ffmpeg/) + toBlobURL for reliable load in worker
+    const coreURL = await toBlobURL(`${CORE_BASE}/ffmpeg-core.js`, 'text/javascript');
+    const wasmURL = await toBlobURL(`${CORE_BASE}/ffmpeg-core.wasm`, 'application/wasm');
+    
+    await ffmpeg.load({ coreURL, wasmURL });
     
     isLoaded = true;
     sendMessage({ 
@@ -424,9 +427,10 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
         await loadFFmpeg();
         break;
         
-      case 'execute':
+      case 'execute': {
         if (!payload) throw new Error('No payload provided');
-        const { type: cmdType, inputData, inputFile, settings, clips } = payload;
+        const cmd = payload as FFmpegCommand;
+        const { type: cmdType, inputData, inputFile, settings, clips } = cmd;
         switch (cmdType) {
           case 'trim':
             const trimData = await executeTrim(inputData, inputFile, settings as TrimSettings);
@@ -447,6 +451,7 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
             break;
         }
         break;
+      }
         
       case 'cancel':
         // FFmpeg doesn't have a clean cancel mechanism

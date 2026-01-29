@@ -1,7 +1,6 @@
 import { useCallback, useState } from 'react';
-import { Upload, FileVideo, Loader2, Play } from 'lucide-react';
+import { Upload, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Button } from '@/components/ui/button';
 import type { VideoFile } from '@/types';
 
 interface UploaderProps {
@@ -9,14 +8,11 @@ interface UploaderProps {
   isLoading?: boolean;
 }
 
-// Using a CORS-enabled sample video URL (public domain video)
-const SAMPLE_VIDEO_URL = 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
 const SUPPORTED_TYPES = ['video/mp4', 'video/webm', 'video/ogg', 'video/quicktime'];
 
 export function Uploader({ onFileSelect, isLoading }: UploaderProps) {
   const [isDragOver, setIsDragOver] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [loadingSample, setLoadingSample] = useState(false);
 
   const processFile = useCallback(async (file: File) => {
     setError(null);
@@ -85,34 +81,6 @@ export function Uploader({ onFileSelect, isLoading }: UploaderProps) {
     }
   }, [processFile]);
 
-  const loadSampleVideo = useCallback(async () => {
-    setLoadingSample(true);
-    setError(null);
-    
-    try {
-      const response = await fetch(SAMPLE_VIDEO_URL, {
-        mode: 'cors',
-      });
-      
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      
-      const blob = await response.blob();
-      const file = new File([blob], 'sample_video.mp4', { type: 'video/mp4' });
-      await processFile(file);
-    } catch (err) {
-      console.error('Failed to load sample video:', err);
-      setError(
-        err instanceof Error && err.message.includes('CORS')
-          ? 'Sample video unavailable due to CORS restrictions. Please upload your own video file.'
-          : 'Failed to load sample video. Please try uploading your own video file.'
-      );
-    } finally {
-      setLoadingSample(false);
-    }
-  }, [processFile]);
-
   return (
     <div className="space-y-4">
       <motion.div
@@ -134,12 +102,12 @@ export function Uploader({ onFileSelect, isLoading }: UploaderProps) {
           accept="video/*"
           className="hidden"
           onChange={handleFileInput}
-          disabled={isLoading || loadingSample}
+          disabled={isLoading}
         />
         
         <div className="flex flex-col items-center gap-4">
           <div className="flex items-center justify-center w-16 h-16 rounded-full bg-primary/10">
-            {isLoading || loadingSample ? (
+            {isLoading ? (
               <Loader2 className="w-8 h-8 text-primary animate-spin" />
             ) : (
               <Upload className="w-8 h-8 text-primary" />
@@ -169,26 +137,6 @@ export function Uploader({ onFileSelect, isLoading }: UploaderProps) {
           </motion.div>
         )}
       </AnimatePresence>
-
-      <div className="flex items-center gap-2">
-        <div className="flex-1 h-px bg-border" />
-        <span className="text-xs text-muted-foreground">or</span>
-        <div className="flex-1 h-px bg-border" />
-      </div>
-
-      <Button
-        variant="outline"
-        className="w-full"
-        onClick={loadSampleVideo}
-        disabled={isLoading || loadingSample}
-      >
-        {loadingSample ? (
-          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-        ) : (
-          <Play className="w-4 h-4 mr-2" />
-        )}
-        Load sample video
-      </Button>
     </div>
   );
 }
