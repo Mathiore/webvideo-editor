@@ -2,7 +2,6 @@
 // This worker runs FFmpeg operations in a separate thread to keep UI responsive
 
 import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { toBlobURL } from '@ffmpeg/util';
 import type { WorkerMessage, WorkerResponse, FFmpegCommand, TrimSettings, FrameSettings, ConvertSettings, MergeSettings } from '../types';
 
 // Self-hosted core (public/ffmpeg/) – same-origin, avoids CORS/import failures in worker
@@ -30,13 +29,13 @@ const progressHandler = ({ progress }: { progress: number }) => {
 let currentStep = '';
 const mergeProgressHandler = ({ progress }: { progress: number }, step: string) => {
   currentStep = step;
-  sendMessage({ 
-    type: 'progress', 
-    payload: { 
+  sendMessage({
+    type: 'progress',
+    payload: {
       progress: Math.round(progress * 100),
       step,
-      message: step 
-    } 
+      message: step
+    }
   });
 };
 
@@ -55,41 +54,70 @@ const checkSharedArrayBuffer = () => {
 // Load FFmpeg – self-hosted core from public/ffmpeg/, toBlobURL avoids CORS/CORP in worker
 const loadFFmpeg = async () => {
   if (isLoaded && ffmpeg) return;
-  
+
   try {
     // Check SharedArrayBuffer availability first
     checkSharedArrayBuffer();
-    
+
     ffmpeg = new FFmpeg();
     ffmpeg.on('log', logHandler);
     ffmpeg.on('progress', progressHandler);
-    
-    sendMessage({ 
-      type: 'log', 
-      payload: { message: 'Loading FFmpeg core...' } 
+
+    sendMessage({
+      type: 'log',
+      payload: { message: 'Loading FFmpeg core...' }
     });
-    
+
+    // Custom fetchToBlobURL to debug loading issues
+    const fetchToBlobURL = async (url: string, type: string) => {
+      sendMessage({ type: 'log', payload: { message: `Fetching ${url}` } });
+      try {
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`Fetch failed: ${response.status} ${response.statusText}`);
+        }
+        const blob = await response.blob();
+        sendMessage({ type: 'log', payload: { message: `Fetched ${url} (${blob.size} bytes)` } });
+        return URL.createObjectURL(blob);
+      } catch (e) {
+        throw new Error(`Network error fetching ${url}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    };
+
     // Same-origin assets (public/ffmpeg/) + toBlobURL for reliable load in worker
-    const coreURL = await toBlobURL(`${CORE_BASE}/ffmpeg-core.js`, 'text/javascript');
-    const wasmURL = await toBlobURL(`${CORE_BASE}/ffmpeg-core.wasm`, 'application/wasm');
-    
+    sendMessage({ type: 'log', payload: { message: 'Fetching FFmpeg core...' } });
+    const coreURL = await fetchToBlobURL(`${CORE_BASE}/ffmpeg-core.js`, 'text/javascript');
+
+    sendMessage({ type: 'log', payload: { message: 'Fetching FFmpeg wasm...' } });
+    const wasmURL = await fetchToBlobURL(`${CORE_BASE}/ffmpeg-core.wasm`, 'application/wasm');
+
+    sendMessage({ type: 'log', payload: { message: 'Initializing FFmpeg...' } });
     await ffmpeg.load({ coreURL, wasmURL });
-    
+
     isLoaded = true;
-    sendMessage({ 
-      type: 'log', 
-      payload: { message: 'FFmpeg loaded successfully' } 
+    sendMessage({
+      type: 'log',
+      payload: { message: 'FFmpeg loaded successfully' }
     });
     sendMessage({ type: 'loaded' });
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    sendMessage({ 
-      type: 'log', 
-      payload: { message: `FFmpeg load error: ${errorMessage}` } 
+    let errorMessage = 'Unknown error';
+    if (error instanceof Error) {
+      errorMessage = error.message;
+    } else if (typeof error === 'string') {
+      errorMessage = error;
+    } else if (typeof error === 'object' && error !== null) {
+      errorMessage = JSON.stringify(error) === '{}' ? error.toString() : JSON.stringify(error);
+    }
+
+    sendMessage({
+      type: 'log',
+      payload: { message: `FFmpeg load error details: ${errorMessage}` }
     });
-    sendMessage({ 
-      type: 'error', 
-      payload: { error: `Failed to load FFmpeg: ${errorMessage}` } 
+    console.error('FFmpeg Worker Error:', error);
+    sendMessage({
+      type: 'error',
+      payload: { error: `Failed to load FFmpeg: ${errorMessage}` }
     });
   }
 };
@@ -137,10 +165,10 @@ const executeTrim = async (
   const inputName = 'input.mp4';
   const outputName = 'output.mp4';
   await writeInputFile(inputData, inputFile, inputName);
-  
+
   const startStr = settings.startTime.toFixed(2);
   const endStr = settings.endTime.toFixed(2);
-  
+
   let args: string[];
   if (settings.mode === 'fast') {
     // Fast cut - stream copy (may have keyframe issues)
@@ -149,15 +177,15 @@ const executeTrim = async (
     // Accurate cut - re-encode
     args = ['-ss', startStr, '-to', endStr, '-i', inputName, '-c:v', 'libx264', '-c:a', 'aac', '-preset', 'fast', outputName];
   }
-  
+
   await ffmpeg.exec(args);
-  
+
   const data = await ffmpeg.readFile(outputName) as Uint8Array;
-  
+
   // Cleanup
   await ffmpeg.deleteFile(inputName);
   await ffmpeg.deleteFile(outputName);
-  
+
   return data;
 };
 
@@ -170,17 +198,17 @@ const executeFrames = async (
   if (!ffmpeg) throw new Error('FFmpeg not loaded');
   const inputName = 'input.mp4';
   await writeInputFile(inputData, inputFile, inputName);
-  
+
   // Create frames directory
   await ffmpeg.createDir('frames');
-  
+
   const args = ['-i', inputName, '-vf', `fps=${settings.fps}`, 'frames/out_%03d.jpg'];
   await ffmpeg.exec(args);
-  
+
   // Read all frame files
   const frames: { name: string; data: Uint8Array }[] = [];
   const files = await ffmpeg.listDir('frames');
-  
+
   for (const f of files) {
     if (f.name.endsWith('.jpg')) {
       const frameData = await ffmpeg.readFile(`frames/${f.name}`) as Uint8Array;
@@ -188,11 +216,11 @@ const executeFrames = async (
       await ffmpeg.deleteFile(`frames/${f.name}`);
     }
   }
-  
+
   // Cleanup
   await ffmpeg.deleteDir('frames');
   await ffmpeg.deleteFile(inputName);
-  
+
   return frames;
 };
 
@@ -206,16 +234,16 @@ const executeConvert = async (
   const inputName = 'input.mp4';
   const outputName = 'output.webm';
   await writeInputFile(inputData, inputFile, inputName);
-  
+
   // Map quality to CRF
   const crfMap: Record<string, number> = {
     low: 40,
     medium: 32,
     high: 24,
   };
-  
+
   const crf = crfMap[settings.quality] || 32;
-  
+
   const args = [
     '-i', inputName,
     '-c:v', 'libvpx-vp9',
@@ -226,15 +254,15 @@ const executeConvert = async (
     '-cpu-used', '4',
     outputName
   ];
-  
+
   await ffmpeg.exec(args);
-  
+
   const data = await ffmpeg.readFile(outputName) as Uint8Array;
-  
+
   // Cleanup
   await ffmpeg.deleteFile(inputName);
   await ffmpeg.deleteFile(outputName);
-  
+
   return data;
 };
 
@@ -245,37 +273,37 @@ const executeMerge = async (
 ): Promise<Uint8Array> => {
   if (!ffmpeg) throw new Error('FFmpeg not loaded');
   if (clips.length < 2) throw new Error('Need at least 2 clips to merge');
-  
+
   const normalizedFiles: string[] = [];
-  
+
   try {
     // Step 1: Normalize each clip to H.264 + AAC
     for (let i = 0; i < clips.length; i++) {
       const clip = clips[i];
       const inputName = `input_${i}.mp4`;
       const normalizedName = `clip_${String(i + 1).padStart(3, '0')}.mp4`;
-      
-      sendMessage({ 
-        type: 'log', 
-        payload: { message: `Normalizing clip ${i + 1}/${clips.length}...` } 
+
+      sendMessage({
+        type: 'log',
+        payload: { message: `Normalizing clip ${i + 1}/${clips.length}...` }
       });
-      sendMessage({ 
-        type: 'progress', 
-        payload: { 
+      sendMessage({
+        type: 'progress',
+        payload: {
           progress: Math.round((i / clips.length) * 50),
           step: `Normalizing clip ${i + 1}/${clips.length}`,
           message: `Normalizing clip ${i + 1}/${clips.length}`
-        } 
+        }
       });
-      
+
       // Write input file
       const data = new Uint8Array(clip.inputData);
       await ffmpeg.writeFile(inputName, data);
-      
+
       // Normalize: trim if needed, then re-encode to H.264 + AAC
       const startStr = clip.start.toFixed(2);
       const endStr = clip.end.toFixed(2);
-      
+
       const normalizeArgs = [
         '-ss', startStr,
         '-to', endStr,
@@ -287,47 +315,47 @@ const executeMerge = async (
         '-movflags', '+faststart',
         normalizedName
       ];
-      
+
       await ffmpeg.exec(normalizeArgs);
       normalizedFiles.push(normalizedName);
-      
+
       // Cleanup input file
       await ffmpeg.deleteFile(inputName);
     }
-    
+
     // Step 2: Create concat list file
-    sendMessage({ 
-      type: 'log', 
-      payload: { message: 'Creating concat list...' } 
+    sendMessage({
+      type: 'log',
+      payload: { message: 'Creating concat list...' }
     });
-    sendMessage({ 
-      type: 'progress', 
-      payload: { 
+    sendMessage({
+      type: 'progress',
+      payload: {
         progress: 50,
         step: 'Preparing merge...',
         message: 'Preparing merge...'
-      } 
+      }
     });
-    
+
     const concatList = normalizedFiles.map(f => `file '${f}'`).join('\n');
     await ffmpeg.writeFile('concat_list.txt', new TextEncoder().encode(concatList));
-    
+
     // Step 3: Merge clips
-    sendMessage({ 
-      type: 'log', 
-      payload: { message: 'Merging clips...' } 
+    sendMessage({
+      type: 'log',
+      payload: { message: 'Merging clips...' }
     });
-    sendMessage({ 
-      type: 'progress', 
-      payload: { 
+    sendMessage({
+      type: 'progress',
+      payload: {
         progress: 60,
         step: 'Merging clips...',
         message: 'Merging clips...'
-      } 
+      }
     });
-    
+
     const outputName = settings.format === 'webm' ? 'merged.webm' : 'merged.mp4';
-    
+
     // Try fast copy first
     let mergeArgs: string[];
     if (settings.format === 'mp4') {
@@ -351,16 +379,16 @@ const executeMerge = async (
         outputName
       ];
     }
-    
+
     try {
       await ffmpeg.exec(mergeArgs);
     } catch (error) {
       // Fallback to re-encode if copy fails
-      sendMessage({ 
-        type: 'log', 
-        payload: { message: 'Copy failed, re-encoding...' } 
+      sendMessage({
+        type: 'log',
+        payload: { message: 'Copy failed, re-encoding...' }
       });
-      
+
       if (settings.format === 'mp4') {
         mergeArgs = [
           '-f', 'concat',
@@ -373,21 +401,21 @@ const executeMerge = async (
           outputName
         ];
       }
-      
+
       await ffmpeg.exec(mergeArgs);
     }
-    
-    sendMessage({ 
-      type: 'progress', 
-      payload: { 
+
+    sendMessage({
+      type: 'progress',
+      payload: {
         progress: 95,
         step: 'Finalizing...',
         message: 'Finalizing...'
-      } 
+      }
     });
-    
+
     const data = await ffmpeg.readFile(outputName) as Uint8Array;
-    
+
     // Cleanup
     for (const file of normalizedFiles) {
       try {
@@ -402,7 +430,7 @@ const executeMerge = async (
     } catch {
       // Ignore cleanup errors
     }
-    
+
     return data;
   } catch (error) {
     // Cleanup on error
@@ -420,13 +448,13 @@ const executeMerge = async (
 // Handle messages from main thread
 self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
   const { type, payload } = event.data;
-  
+
   try {
     switch (type) {
       case 'load':
         await loadFFmpeg();
         break;
-        
+
       case 'execute': {
         if (!payload) throw new Error('No payload provided');
         const cmd = payload as FFmpegCommand;
@@ -452,16 +480,16 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
         }
         break;
       }
-        
+
       case 'cancel':
         // FFmpeg doesn't have a clean cancel mechanism
         // In practice, we'd need to terminate the worker
         break;
     }
   } catch (error) {
-    sendMessage({ 
-      type: 'error', 
-      payload: { error: error instanceof Error ? error.message : 'Unknown error occurred' } 
+    sendMessage({
+      type: 'error',
+      payload: { error: error instanceof Error ? error.message : 'Unknown error occurred' }
     });
   }
 };

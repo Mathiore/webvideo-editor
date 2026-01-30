@@ -16,10 +16,10 @@ import { ffmpegClient } from '@/lib/ffmpegClient';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Download } from 'lucide-react';
-import type { 
-  VideoFile, 
-  ActionTab, 
-  ProcessingState, 
+import type {
+  VideoFile,
+  ActionTab,
+  ProcessingState,
   ExportResult,
   TrimSettings,
   FrameSettings,
@@ -50,15 +50,16 @@ const revokeObjectURLDeferred = (url: string, delayMs = 2000) => {
 function Index() {
   // Legacy single video support (for backward compatibility)
   const [video, setVideo] = useState<VideoFile | null>(null);
-  
+
   // New timeline/project state
   const [project, setProject] = useState<Project>({
     clips: [],
     activeClipId: null,
   });
-  
+
   const [activeTab, setActiveTab] = useState<ActionTab>('trim');
   const [currentTime, setCurrentTime] = useState(0);
+  const [seekTo, setSeekTo] = useState<number | null>(null);
   const [processingState, setProcessingState] = useState<ProcessingState>(initialProcessingState);
   const [exports, setExports] = useState<ExportResult[]>([]);
   const [previewResult, setPreviewResult] = useState<ExportResult | null>(null);
@@ -67,22 +68,104 @@ function Index() {
   // Determine if we're in timeline mode (has clips) or single video mode
   const isTimelineMode = project.clips.length > 0;
   const activeClip = project.clips.find(c => c.id === project.activeClipId) || null;
-  
+
   // For backward compatibility: if single video exists but no clips, use video
   const displayVideo = isTimelineMode ? null : video;
-  
+
   // Calculate total timeline duration
   const totalDuration = useMemo(() => {
     return project.clips.reduce((acc, clip) => acc + (clip.end - clip.start), 0);
   }, [project.clips]);
 
+  // Calculate global time for timeline playhead
+  const currentGlobalTime = useMemo(() => {
+    if (!isTimelineMode || !activeClip) return currentTime;
+
+    let time = 0;
+    for (const clip of project.clips) {
+      if (clip.id === activeClip.id) {
+        return time + currentTime;
+      }
+      time += (clip.end - clip.start);
+    }
+    return time;
+  }, [project.clips, activeClip, currentTime, isTimelineMode]);
+
+  const handleTimelineSeek = useCallback((time: number) => {
+    let accumulatedTime = 0;
+
+    for (const clip of project.clips) {
+      const clipDuration = clip.end - clip.start;
+
+      // Check if time falls within this clip
+      if (time >= accumulatedTime && time <= accumulatedTime + clipDuration) {
+        // Found the clip
+        const relativeTime = time - accumulatedTime;
+
+        // If it's a different clip, switch to it
+        if (clip.id !== project.activeClipId) {
+          setProject((prev) => ({ ...prev, activeClipId: clip.id }));
+          setTrimmingClipId(null);
+        }
+
+        // Seek relative to user perception of the clip (accounting for trimmed start)
+        setSeekTo(clip.start + relativeTime);
+        return;
+      }
+
+      accumulatedTime += clipDuration;
+    }
+  }, [project.clips, project.activeClipId]);
+
+  const handleTimelineSplit = useCallback(() => {
+    if (!activeClip || !isTimelineMode) return;
+
+    const splitTime = currentTime;
+
+    // Validation: prevent splitting too close to edges (0.5s)
+    if (splitTime < activeClip.start + 0.5 || splitTime > activeClip.end - 0.5) {
+      return;
+    }
+
+    setProject(prev => {
+      const clipIndex = prev.clips.findIndex(c => c.id === activeClip.id);
+      if (clipIndex === -1) return prev;
+
+      // Create new unique IDs
+      const id1 = crypto.randomUUID();
+      const id2 = crypto.randomUUID();
+
+      const clip1: Clip = {
+        ...activeClip,
+        id: id1,
+        end: splitTime,
+      };
+
+      const clip2: Clip = {
+        ...activeClip,
+        id: id2,
+        start: splitTime,
+      };
+
+      const newClips = [...prev.clips];
+      newClips.splice(clipIndex, 1, clip1, clip2);
+
+      return {
+        ...prev,
+        clips: newClips,
+        activeClipId: clip2.id // Select second part
+      };
+    });
+
+  }, [activeClip, currentTime, isTimelineMode]);
+
   const handleAddClip = useCallback(async (file: File) => {
     const objectUrl = URL.createObjectURL(file);
-    
+
     // Get video duration
     const video = document.createElement('video');
     video.preload = 'metadata';
-    
+
     return new Promise<void>((resolve, reject) => {
       video.onloadedmetadata = () => {
         const clip: Clip = {
@@ -96,42 +179,47 @@ function Index() {
           start: 0,
           end: video.duration,
         };
-        
+
         setProject((prev) => ({
           clips: [...prev.clips, clip],
           activeClipId: prev.activeClipId || clip.id,
         }));
-        
+
         video.removeAttribute('src');
         video.load();
         resolve();
       };
-      
+
       video.onerror = () => {
         video.removeAttribute('src');
         video.load();
         URL.revokeObjectURL(objectUrl);
         reject(new Error('Failed to load video'));
       };
-      
+
       video.src = objectUrl;
     });
   }, []);
 
   const handleFileSelect = useCallback((videoFile: VideoFile) => {
-    // If in timeline mode, add as clip; otherwise, set as single video
-    if (isTimelineMode) {
-      handleAddClip(videoFile.file);
-    } else {
-      setVideo((prev) => {
-        if (prev?.objectUrl) {
-          revokeObjectURLDeferred(prev.objectUrl);
-        }
-        return videoFile;
-      });
-      setProcessingState(initialProcessingState);
-    }
-  }, [isTimelineMode, handleAddClip]);
+    // Always treat as timeline clip to show timeline view
+    const clip: Clip = {
+      id: crypto.randomUUID(),
+      name: videoFile.name,
+      file: videoFile.file,
+      size: videoFile.size,
+      duration: videoFile.duration,
+      objectUrl: videoFile.objectUrl,
+      type: videoFile.type,
+      start: 0,
+      end: videoFile.duration,
+    };
+
+    setProject((prev) => ({
+      clips: [...prev.clips, clip],
+      activeClipId: prev.activeClipId || clip.id,
+    }));
+  }, []);
 
   const handleRemoveClip = useCallback((id: string) => {
     setProject((prev) => {
@@ -139,11 +227,11 @@ function Index() {
       if (clip?.objectUrl) {
         revokeObjectURLDeferred(clip.objectUrl);
       }
-      
+
       const newClips = prev.clips.filter(c => c.id !== id);
       return {
         clips: newClips,
-        activeClipId: prev.activeClipId === id 
+        activeClipId: prev.activeClipId === id
           ? (newClips.length > 0 ? newClips[0].id : null)
           : prev.activeClipId,
       };
@@ -154,13 +242,13 @@ function Index() {
     setProject((prev) => {
       const index = prev.clips.findIndex(c => c.id === id);
       if (index === -1) return prev;
-      
+
       const newIndex = direction === 'up' ? index - 1 : index + 1;
       if (newIndex < 0 || newIndex >= prev.clips.length) return prev;
-      
+
       const newClips = [...prev.clips];
       [newClips[index], newClips[newIndex]] = [newClips[newIndex], newClips[index]];
-      
+
       return {
         ...prev,
         clips: newClips,
@@ -204,12 +292,12 @@ function Index() {
     if (trimmingClipId && isTimelineMode) {
       const clip = project.clips.find(c => c.id === trimmingClipId);
       if (!clip) return;
-      
+
       try {
         const result = await ffmpegClient.trim(clip.file, settings, setProcessingState);
         setExports((prev) => [result, ...prev]);
         setProcessingState({ ...initialProcessingState, status: 'complete', message: 'Trim complete!' });
-        
+
         // Update clip trim settings
         handleUpdateClipTrim(trimmingClipId, settings.startTime, settings.endTime);
         setTrimmingClipId(null);
@@ -223,10 +311,10 @@ function Index() {
       }
       return;
     }
-    
+
     // Legacy single video trim
     if (!video) return;
-    
+
     try {
       const result = await ffmpegClient.trim(video.file, settings, setProcessingState);
       setExports((prev) => [result, ...prev]);
@@ -244,10 +332,10 @@ function Index() {
   const handleExtractFrames = useCallback(async (settings: FrameSettings) => {
     const targetVideo = isTimelineMode && activeClip ? activeClip : video;
     if (!targetVideo) return;
-    
+
     const file = isTimelineMode && activeClip ? activeClip.file : (video?.file);
     if (!file) return;
-    
+
     try {
       const result = await ffmpegClient.extractFrames(file, settings, setProcessingState);
       setExports((prev) => [result, ...prev]);
@@ -265,10 +353,10 @@ function Index() {
   const handleConvert = useCallback(async (settings: ConvertSettings) => {
     const targetVideo = isTimelineMode && activeClip ? activeClip : video;
     if (!targetVideo) return;
-    
+
     const file = isTimelineMode && activeClip ? activeClip.file : (video?.file);
     if (!file) return;
-    
+
     try {
       const result = await ffmpegClient.convert(file, settings, setProcessingState);
       setExports((prev) => [result, ...prev]);
@@ -285,7 +373,7 @@ function Index() {
 
   const handleMerge = useCallback(async (settings: MergeSettings) => {
     if (project.clips.length < 2) return;
-    
+
     try {
       const result = await ffmpegClient.merge(project.clips, settings, setProcessingState);
       setExports((prev) => [result, ...prev]);
@@ -319,21 +407,21 @@ function Index() {
 
   const isProcessing = processingState.status === 'processing' || processingState.status === 'loading';
   const hasContent = isTimelineMode || !!video;
-  const currentVideo = isTimelineMode && activeClip 
+  const currentVideo = isTimelineMode && activeClip
     ? {
-        file: activeClip.file,
-        name: activeClip.name,
-        size: activeClip.size,
-        duration: activeClip.duration,
-        objectUrl: activeClip.objectUrl,
-        type: activeClip.type,
-      } as VideoFile
+      file: activeClip.file,
+      name: activeClip.name,
+      size: activeClip.size,
+      duration: activeClip.duration,
+      objectUrl: activeClip.objectUrl,
+      type: activeClip.type,
+    } as VideoFile
     : displayVideo;
 
   return (
     <div className="flex flex-col h-screen bg-background">
       <Header hasVideo={hasContent} />
-      
+
       <main className="flex-1 flex flex-col lg:flex-row overflow-hidden">
         {/* Left Panel - Clips & Actions */}
         <aside className="w-full lg:w-80 xl:w-96 border-b lg:border-b-0 lg:border-r border-border p-4 overflow-y-auto">
@@ -384,13 +472,13 @@ function Index() {
                     </Button>
                   </div>
                 )}
-                
-                <ActionTabs 
-                  activeTab={activeTab} 
+
+                <ActionTabs
+                  activeTab={activeTab}
                   onTabChange={setActiveTab}
                   disabled={isProcessing}
                 />
-                
+
                 <AnimatePresence mode="wait">
                   <motion.div
                     key={activeTab}
@@ -437,6 +525,7 @@ function Index() {
                 startTime={activeTab === 'trim' && trimmingClipId ? activeClip?.start : undefined}
                 endTime={activeTab === 'trim' && trimmingClipId ? activeClip?.end : undefined}
                 onTimeUpdate={setCurrentTime}
+                seekTo={seekTo}
               />
               {/* Timeline */}
               {isTimelineMode && (
@@ -446,6 +535,9 @@ function Index() {
                     activeClipId={project.activeClipId}
                     onSelectClip={handleSelectClip}
                     totalDuration={totalDuration}
+                    currentTime={currentGlobalTime}
+                    onSeek={handleTimelineSeek}
+                    onSplit={handleTimelineSplit}
                   />
                 </div>
               )}
@@ -467,8 +559,8 @@ function Index() {
       </main>
 
       {/* Preview Dialog */}
-      <Dialog 
-        open={!!previewResult} 
+      <Dialog
+        open={!!previewResult}
         onOpenChange={(open) => {
           if (!open) {
             // Clear video src before closing to cancel any pending Range requests

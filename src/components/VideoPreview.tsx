@@ -10,6 +10,7 @@ interface VideoPreviewProps {
   startTime?: number;
   endTime?: number;
   onTimeUpdate?: (time: number) => void;
+  seekTo?: number | null;
 }
 
 function formatTime(seconds: number): string {
@@ -18,12 +19,22 @@ function formatTime(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
-export function VideoPreview({ video, startTime, endTime, onTimeUpdate }: VideoPreviewProps) {
+export function VideoPreview({ video, startTime, endTime, onTimeUpdate, seekTo }: VideoPreviewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(1);
+
+  // Handle external seek
+  useEffect(() => {
+    if (seekTo !== undefined && seekTo !== null && videoRef.current) {
+      if (Math.abs(videoRef.current.currentTime - seekTo) > 0.1) {
+        videoRef.current.currentTime = seekTo;
+        setCurrentTime(seekTo);
+      }
+    }
+  }, [seekTo]);
 
   // Cleanup on unmount - ensure video is cleared before parent revokes blob URL
   useEffect(() => {
@@ -40,28 +51,33 @@ export function VideoPreview({ video, startTime, endTime, onTimeUpdate }: VideoP
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
-    
+
     // Store current URL to check if it changed
     const currentUrl = el.src;
     const newUrl = video.objectUrl;
-    
+
     // Only update if URL actually changed
     if (currentUrl === newUrl) return;
-    
+
     // Pause and clear src first to cancel any in-flight Range requests
     el.pause();
     el.removeAttribute('src');
     el.load();
-    
+
     // Small delay to ensure previous requests are cancelled before setting new URL
     const timeoutId = setTimeout(() => {
       if (el && videoRef.current === el) {
         el.src = newUrl;
         setCurrentTime(0);
         setIsPlaying(false);
+        // If there was a pending seek, apply it now
+        if (seekTo !== undefined && seekTo !== null) {
+          el.currentTime = seekTo;
+          setCurrentTime(seekTo);
+        }
       }
     }, 50);
-    
+
     return () => {
       clearTimeout(timeoutId);
       if (el && videoRef.current === el) {
@@ -70,11 +86,11 @@ export function VideoPreview({ video, startTime, endTime, onTimeUpdate }: VideoP
         el.load();
       }
     };
-  }, [video.objectUrl]);
+  }, [video.objectUrl, seekTo]);
 
   const togglePlay = useCallback(() => {
     if (!videoRef.current) return;
-    
+
     if (isPlaying) {
       videoRef.current.pause();
     } else {
@@ -144,7 +160,7 @@ export function VideoPreview({ video, startTime, endTime, onTimeUpdate }: VideoP
           onPlay={() => setIsPlaying(true)}
           onPause={() => setIsPlaying(false)}
         />
-        
+
         {/* Play overlay button */}
         {!isPlaying && (
           <button

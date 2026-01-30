@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
-const srcDir = path.join(projectRoot, 'node_modules', '@ffmpeg', 'core', 'dist', 'umd');
+const srcDir = path.join(projectRoot, 'node_modules', '@ffmpeg', 'core', 'dist', 'esm');
 const destDir = path.join(projectRoot, 'public', 'ffmpeg');
 
 const files = ['ffmpeg-core.js', 'ffmpeg-core.wasm'];
