@@ -9,6 +9,8 @@ interface VideoPreviewProps {
   video: VideoFile;
   startTime?: number;
   endTime?: number;
+  onComplete?: () => void;
+  autoPlay?: boolean;
   onTimeUpdate?: (time: number) => void;
   seekTo?: number | null;
 }
@@ -19,7 +21,7 @@ function formatTime(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
-export function VideoPreview({ video, startTime, endTime, onTimeUpdate, seekTo }: VideoPreviewProps) {
+export function VideoPreview({ video, startTime, endTime, onTimeUpdate, seekTo, onComplete, autoPlay }: VideoPreviewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -68,9 +70,21 @@ export function VideoPreview({ video, startTime, endTime, onTimeUpdate, seekTo }
     const timeoutId = setTimeout(() => {
       if (el && videoRef.current === el) {
         el.src = newUrl;
-        setCurrentTime(0);
-        setIsPlaying(false);
-        // If there was a pending seek, apply it now
+
+        // Initialize at startTime if provided
+        const initialTime = startTime || 0;
+        el.currentTime = initialTime;
+        setCurrentTime(initialTime);
+
+        if (autoPlay) {
+          el.play()
+            .then(() => setIsPlaying(true))
+            .catch(() => setIsPlaying(false));
+        } else {
+          setIsPlaying(false);
+        }
+
+        // If there was a pending seek, apply it now (overrides startTime)
         if (seekTo !== undefined && seekTo !== null) {
           el.currentTime = seekTo;
           setCurrentTime(seekTo);
@@ -86,7 +100,7 @@ export function VideoPreview({ video, startTime, endTime, onTimeUpdate, seekTo }
         el.load();
       }
     };
-  }, [video.objectUrl, seekTo]);
+  }, [video.objectUrl, seekTo, autoPlay, startTime]);
 
   const togglePlay = useCallback(() => {
     if (!videoRef.current) return;
@@ -104,7 +118,18 @@ export function VideoPreview({ video, startTime, endTime, onTimeUpdate, seekTo }
     const time = videoRef.current.currentTime;
     setCurrentTime(time);
     onTimeUpdate?.(time);
-  }, [onTimeUpdate]);
+
+    // Check if we reached the end of the clip segment
+    if (endTime !== undefined && time >= endTime && isPlaying) {
+      onComplete?.();
+    }
+  }, [onTimeUpdate, endTime, isPlaying, onComplete]);
+
+  // Handle natural video end
+  const handleEnded = useCallback(() => {
+    setIsPlaying(false);
+    onComplete?.();
+  }, [onComplete]);
 
   const handleSeek = useCallback((value: number[]) => {
     if (!videoRef.current) return;
@@ -134,10 +159,6 @@ export function VideoPreview({ video, startTime, endTime, onTimeUpdate, seekTo }
     } else {
       videoRef.current.requestFullscreen();
     }
-  }, []);
-
-  const handleEnded = useCallback(() => {
-    setIsPlaying(false);
   }, []);
 
   // Calculate timeline markers for trim range

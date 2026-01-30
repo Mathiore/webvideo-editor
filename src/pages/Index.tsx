@@ -64,6 +64,7 @@ function Index() {
   const [exports, setExports] = useState<ExportResult[]>([]);
   const [previewResult, setPreviewResult] = useState<ExportResult | null>(null);
   const [trimmingClipId, setTrimmingClipId] = useState<string | null>(null);
+  const [shouldAutoPlay, setShouldAutoPlay] = useState(false);
 
   // Determine if we're in timeline mode (has clips) or single video mode
   const isTimelineMode = project.clips.length > 0;
@@ -106,6 +107,7 @@ function Index() {
         if (clip.id !== project.activeClipId) {
           setProject((prev) => ({ ...prev, activeClipId: clip.id }));
           setTrimmingClipId(null);
+          setShouldAutoPlay(true); // Auto-play when seeking across clips? Maybe yes.
         }
 
         // Seek relative to user perception of the clip (accounting for trimmed start)
@@ -117,13 +119,32 @@ function Index() {
     }
   }, [project.clips, project.activeClipId]);
 
+  const handleVideoComplete = useCallback(() => {
+    if (!isTimelineMode || !activeClip) return;
+
+    const currentIndex = project.clips.findIndex(c => c.id === activeClip.id);
+    if (currentIndex !== -1 && currentIndex < project.clips.length - 1) {
+      // Play next clip
+      const nextClip = project.clips[currentIndex + 1];
+      setProject(prev => ({
+        ...prev,
+        activeClipId: nextClip.id
+      }));
+      setShouldAutoPlay(true);
+    } else {
+      // End of timeline
+      setShouldAutoPlay(false);
+    }
+  }, [isTimelineMode, activeClip, project.clips]);
+
   const handleTimelineSplit = useCallback(() => {
     if (!activeClip || !isTimelineMode) return;
 
-    const splitTime = currentTime;
+    // Ensure we use the current playing time for the split, relative to the clip
+    const currentClipTime = currentTime;
 
-    // Validation: prevent splitting too close to edges (0.5s)
-    if (splitTime < activeClip.start + 0.5 || splitTime > activeClip.end - 0.5) {
+    // Validate split time is within clip bounds (plus some margin)
+    if (currentClipTime < activeClip.start + 0.5 || currentClipTime > activeClip.end - 0.5) {
       return;
     }
 
@@ -138,13 +159,13 @@ function Index() {
       const clip1: Clip = {
         ...activeClip,
         id: id1,
-        end: splitTime,
+        end: currentClipTime,
       };
 
       const clip2: Clip = {
         ...activeClip,
         id: id2,
-        start: splitTime,
+        start: currentClipTime,
       };
 
       const newClips = [...prev.clips];
@@ -156,6 +177,7 @@ function Index() {
         activeClipId: clip2.id // Select second part
       };
     });
+    setShouldAutoPlay(false); // Can pause or play, usually pause to let user see split
 
   }, [activeClip, currentTime, isTimelineMode]);
 
@@ -262,11 +284,13 @@ function Index() {
       activeClipId: id,
     }));
     setTrimmingClipId(null);
+    setShouldAutoPlay(false);
   }, []);
 
   const handleTrimClip = useCallback((id: string) => {
     setTrimmingClipId(id);
     setActiveTab('trim');
+    setShouldAutoPlay(false);
   }, []);
 
   const handleUpdateClipTrim = useCallback((id: string, start: number, end: number) => {
@@ -415,6 +439,7 @@ function Index() {
       duration: activeClip.duration,
       objectUrl: activeClip.objectUrl,
       type: activeClip.type,
+      // Pass start/end for awareness
     } as VideoFile
     : displayVideo;
 
@@ -522,10 +547,12 @@ function Index() {
             <>
               <VideoPreview
                 video={currentVideo}
-                startTime={activeTab === 'trim' && trimmingClipId ? activeClip?.start : undefined}
-                endTime={activeTab === 'trim' && trimmingClipId ? activeClip?.end : undefined}
+                startTime={isTimelineMode && activeClip ? activeClip.start : undefined}
+                endTime={isTimelineMode && activeClip ? activeClip.end : undefined}
                 onTimeUpdate={setCurrentTime}
                 seekTo={seekTo}
+                onComplete={handleVideoComplete}
+                autoPlay={shouldAutoPlay}
               />
               {/* Timeline */}
               {isTimelineMode && (
